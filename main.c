@@ -145,7 +145,7 @@ static const char keys_field_time[] = "  - time: ";
 static const char hostname_example[] = "xxxxxvsjzke274nisktdqcl3eqm5ve3m6iur6vwme7m5p6kxivrvjnyd.onion";
 static const char seckey_example[] = "PT0gZWQyNTUxOXYxLXNlY3JldDogdHlwZTAgPT0AAACwCPMr6rvBRtkW7ZzZ8P7Ne4acRZrhPrN/EF6AETRraFGvdrkW5es4WXB2UxrbuUf8zPoIKkXK5cpdakYdUeM3";
 static const char pubkey_example[] = "PT0gZWQyNTUxOXYxLXB1YmxpYzogdHlwZTAgPT0AAAC973vWScqJr/GokqY4CXskGdqTbPIpH1bMJ9nX+VdFYw==";
-static const char time_example[] = "2018-07-04 21:31:20.111222333+00:00";
+static const char time_example[] = "2018-07-04 21:31:20";
 
 #define HOSTNAME_LEN (sizeof(hostname_example) - NULLTERM_LEN)
 #define SECKEY_LEN (sizeof(seckey_example) - NULLTERM_LEN)
@@ -190,6 +190,11 @@ static void writekeys(const char *hostname, const u8 *formated_secret, const u8 
 
 	BUF_APPEND_CSTR(keysbuf, offset, keys_field_time);
 	char timebuf[TIME_LEN + NULLTERM_LEN];
+	time_t timer;
+	struct tm* tm_info;
+	time(&timer);
+	tm_info = localtime(&timer);
+	strftime(timebuf, TIME_LEN + NULLTERM_LEN, "%Y-%m-%d %H:%M:%S", tm_info);
 	BUF_APPEND(keysbuf, offset, timebuf, TIME_LEN);
 	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
