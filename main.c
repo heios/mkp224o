@@ -57,6 +57,9 @@ static int quietflag = 0;
 // with newline included
 #define ONION_LEN 62
 
+#define FORMATTED_SECRET_LEN (skprefixlen + SECRET_LEN)
+#define FORMATTED_PUBLIC_LEN (pkprefixlen + PUBLIC_LEN)
+
 static size_t onionendpos;   // end of .onion within string
 static size_t direndpos;     // end of dir before .onion within string
 static size_t printstartpos; // where to start printing from
@@ -64,7 +67,7 @@ static size_t printlen;      // precalculated, related to printstartpos
 
 static pthread_mutex_t fout_mutex;
 static FILE *fout;
-const char *keysoutfile = 0;
+const char *outfilekeys = 0;
 static size_t numneedgenerate = 0;
 static int numwords = 1;
 static pthread_mutex_t keysgenerated_mutex;
@@ -166,31 +169,31 @@ static void writekeys(const char *hostname, const u8 *formated_secret, const u8 
 	char keysbuf[KEYS_LEN];
 	size_t offset = 0;
 
-	BUF_APPEND_CSTR(keysbuf,offset,keys_field_generated);
-	BUF_APPEND_CHAR(keysbuf,offset,'\n');
+	BUF_APPEND_CSTR(keysbuf, offset, keys_field_generated);
+	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
-	BUF_APPEND_CSTR(keysbuf,offset,keys_field_hostname);
-	BUF_APPEND(keysbuf,offset,hostname,ONION_LEN);
-	BUF_APPEND_CHAR(keysbuf,offset,'\n');
+	BUF_APPEND_CSTR(keysbuf, offset, keys_field_hostname);
+	BUF_APPEND(keysbuf, offset, hostname, ONION_LEN);
+	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
+	BUF_APPEND_CSTR(keysbuf, offset, keys_field_secretkey);
 	char seckeybuf[SECKEY_LEN + NULLTERM_LEN];
-	base64_to(seckeybuf,formated_secret,SECRET_LEN);
-	BUF_APPEND_CSTR(keysbuf,offset,keys_field_secretkey);
-	BUF_APPEND(keysbuf,offset,seckeybuf,SECKEY_LEN);
-	BUF_APPEND_CHAR(keysbuf,offset,'\n');
+	base64_to(seckeybuf, formated_secret, FORMATTED_SECRET_LEN);
+	BUF_APPEND(keysbuf, offset, seckeybuf, SECKEY_LEN);
+	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
+	BUF_APPEND_CSTR(keysbuf, offset, keys_field_publickey);
 	char pubkeybuf[PUBKEY_LEN + NULLTERM_LEN];
-	base64_to(pubkeybuf,formated_public,PUBLIC_LEN);
-	BUF_APPEND_CSTR(keysbuf,offset,keys_field_publickey);
-	BUF_APPEND(keysbuf,offset,pubkeybuf,PUBKEY_LEN);
-	BUF_APPEND_CHAR(keysbuf,offset,'\n');
+	base64_to(pubkeybuf, formated_public, FORMATTED_PUBLIC_LEN);
+	BUF_APPEND(keysbuf, offset, pubkeybuf, PUBKEY_LEN);
+	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
+	BUF_APPEND_CSTR(keysbuf, offset, keys_field_time);
 	char timebuf[TIME_LEN + NULLTERM_LEN];
-	BUF_APPEND_CSTR(keysbuf,offset,keys_field_time);
-	BUF_APPEND(keysbuf,offset,timebuf,TIME_LEN);
-	BUF_APPEND_CHAR(keysbuf,offset,'\n');
+	BUF_APPEND(keysbuf, offset, timebuf, TIME_LEN);
+	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
-	BUF_APPEND_CHAR(keysbuf,offset,'\n');
+	BUF_APPEND_CHAR(keysbuf, offset, '\n');
 
 	assert(offset == KEYS_LEN);
 
@@ -237,7 +240,7 @@ static void onionready(char *sname,const u8 *secret,const u8 *pubonion)
 	}
 
 	if (fout) {
-		if (keysoutfile) {
+		if (outfilekeys) {
 			writekeys(&sname[printstartpos],secret,pubonion);
 			return;
 		} else {
@@ -573,6 +576,62 @@ static void setworkdir(const char *wd)
 
 VEC_STRUCT(threadvec, pthread_t);
 
+int parseandcreate(const char *filepath, const char *hostname)
+{
+	char buf[16*1024];
+	memset(buf, 0, sizeof(buf));
+	FILE *fkeys = fopen(filepath, "r");
+	if (fkeys == NULL) {
+		fprintf(stderr, "cannot open file with keys \"%s\" for reading.\n", filepath);
+		return 1;
+	}
+	while (1) {
+		const size_t readbytes = fread(
+			buf + ONION_LEN,
+			sizeof(buf) - ONION_LEN - NULLTERM_LEN,
+			sizeof(buf[0]),
+			fkeys);
+		if (readbytes == 0) {
+			break;
+		}
+		buf[readbytes] = '\0';
+		char *pfound = strstr(buf, hostname);
+		if (pfound != NULL) {
+			memmove(buf, pfound, ONION_LEN);
+			char *pendrecord = NULL;
+			while (1) {
+				size_t readbytes = fread(
+					buf + ONION_LEN,
+					sizeof(buf) - ONION_LEN - NULLTERM_LEN,
+					sizeof(buf[0]),
+					fkeys);
+				if (readbytes == 0) {
+					break;
+				}
+				char *pendrecord = strstr(buf, "\n\n");
+				if (pendrecord != NULL) {
+					break;
+				}
+				// Need to finish.
+			}
+			if (pendrecord == NULL) {
+				fprintf(stderr, "looks like file with keys \"%s\" is incomplete, found hostname but not keys.\n", filepath);
+				break;
+			}
+		} else {
+			memmove(buf, buf + sizeof(buf) - ONION_LEN, ONION_LEN);
+		}
+	}
+
+	if (ferror(fkeys)) {
+		fprintf(stderr, "error while reading file with keys \"%s\".\n", filepath);
+		fclose(fkeys);
+		return 1;
+	}
+	fclose(fkeys);
+	return 0;
+}
+
 int main(int argc,char **argv)
 {
 	const char *outfile = 0;
@@ -657,7 +716,23 @@ int main(int argc,char **argv)
 			}
 			else if (*arg == 'O') {
 				if (argc--)
-					keysoutfile = *argv++;
+					outfilekeys = *argv++;
+				else
+					e_additional();
+			}
+			else if (*arg == 'i') {
+				char * filepath = NULL;
+				char * hostname = NULL;
+				if (argc--) {
+					filepath = *argv++;
+					if (argc--) {
+						hostname = *argv++;
+						parseandcreate(filepath, hostname);
+						return 0;
+					}
+					else
+						e_additional();
+				}
 				else
 					e_additional();
 			}
@@ -726,8 +801,8 @@ int main(int argc,char **argv)
 			filters_add(arg);
 	}
 
-	if (keysoutfile) {
-		fout = fopen(keysoutfile,"w");
+	if (outfilekeys) {
+		fout = fopen(outfilekeys,"a");
 		if (!fout) {
 			perror("failed to open output file for keys");
 			exit(Q_FAILOPENOUTPUT);
