@@ -16,6 +16,11 @@ static const char base64t[64] = {
 
 char *base64_to(char *dst,const u8 *src,size_t slen)
 {
+	if (!slen) {
+		*dst = '\0';
+		return dst;
+	}
+
 	for(size_t i = 0; i < slen;) {
 		u32 threebytes = 0;
 		threebytes |= (i < slen ? (unsigned char)src[i++] : (unsigned char)0) << (2 * 8);

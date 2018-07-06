@@ -48,6 +48,8 @@ size_t base64_from(u8 *dst,const char *src,size_t srclen)
 {
 	if (srclen % 4) {
 		return -1;
+	} else if (!srclen) {
+		return 0;
 	}
 
 	size_t dstlen = BASE64_FROM_LEN(srclen);
