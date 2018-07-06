@@ -22,16 +22,13 @@
 #include "keccak.h"
 #include "ed25519/ed25519.h"
 #include "ioutil.h"
-
+#include "constants.h"
 
 #ifndef _WIN32
 #define FSZ "%zu"
 #else
 #define FSZ "%Iu"
 #endif
-
-#define LINEFEED_LEN (sizeof(char))
-#define NULLTERM_LEN (sizeof(char))
 
 // additional 0 terminator is added by C
 static const char pkprefix[] = "== ed25519v1-public: type0 ==\0\0";
@@ -130,35 +127,7 @@ typedef union {
 	} i;
 } pubonionunion;
 
-static const char keys_field_generated[] = "generated:";
-static const char keys_field_hostname[] = "  - hostname: ";
-static const char keys_field_secretkey[] = "  - hs_ed25519_secret_key: ";
-static const char keys_field_publickey[] = "  - hs_ed25519_public_key: ";
-static const char keys_field_time[] = "  - time: ";
 
-#define KEYS_FIELD_GENERATED_LEN (sizeof(keys_field_generated) - NULLTERM_LEN)
-#define KEYS_FIELD_HOSTNAME_LEN (sizeof(keys_field_hostname) - NULLTERM_LEN)
-#define KEYS_FIELD_SECRETKEY_LEN (sizeof(keys_field_secretkey) - NULLTERM_LEN)
-#define KEYS_FIELD_PUBLICKEY_LEN (sizeof(keys_field_publickey) - NULLTERM_LEN)
-#define KEYS_FIELD_TIME_LEN (sizeof(keys_field_time) - NULLTERM_LEN)
-
-static const char hostname_example[] = "xxxxxvsjzke274nisktdqcl3eqm5ve3m6iur6vwme7m5p6kxivrvjnyd.onion";
-static const char seckey_example[] = "PT0gZWQyNTUxOXYxLXNlY3JldDogdHlwZTAgPT0AAACwCPMr6rvBRtkW7ZzZ8P7Ne4acRZrhPrN/EF6AETRraFGvdrkW5es4WXB2UxrbuUf8zPoIKkXK5cpdakYdUeM3";
-static const char pubkey_example[] = "PT0gZWQyNTUxOXYxLXB1YmxpYzogdHlwZTAgPT0AAAC973vWScqJr/GokqY4CXskGdqTbPIpH1bMJ9nX+VdFYw==";
-static const char time_example[] = "2018-07-04 21:31:20";
-
-#define HOSTNAME_LEN (sizeof(hostname_example) - NULLTERM_LEN)
-#define SECKEY_LEN (sizeof(seckey_example) - NULLTERM_LEN)
-#define PUBKEY_LEN (sizeof(pubkey_example) - NULLTERM_LEN)
-#define TIME_LEN (sizeof(time_example) - NULLTERM_LEN)
-
-#define KEYS_LEN ( KEYS_FIELD_GENERATED_LEN + LINEFEED_LEN \
-	+ KEYS_FIELD_HOSTNAME_LEN + HOSTNAME_LEN + LINEFEED_LEN \
-	+ KEYS_FIELD_SECRETKEY_LEN + SECKEY_LEN + LINEFEED_LEN \
-	+ KEYS_FIELD_PUBLICKEY_LEN + PUBKEY_LEN + LINEFEED_LEN \
-	+ KEYS_FIELD_TIME_LEN + TIME_LEN + LINEFEED_LEN \
-	+ LINEFEED_LEN \
-)
 
 #define BUF_APPEND(buf,offset,src,srclen) strncpy(&buf[offset],src,srclen); offset += srclen;
 #define BUF_APPEND_CSTR(buf,offset,src) BUF_APPEND(buf,offset,src,strlen(src))
@@ -581,60 +550,157 @@ static void setworkdir(const char *wd)
 
 VEC_STRUCT(threadvec, pthread_t);
 
+
 int parseandcreate(const char *filepath, const char *hostname)
 {
 	char buf[16*1024];
 	memset(buf, 0, sizeof(buf));
 	FILE *fkeys = fopen(filepath, "r");
 	if (fkeys == NULL) {
-		fprintf(stderr, "cannot open file with keys \"%s\" for reading.\n", filepath);
+		fprintf(stderr, "Cannot open file with keys \"%s\" for reading.\n", filepath);
 		return 1;
 	}
+	int error_number = 1;
+	size_t readbytes = 0;
 	while (1) {
-		const size_t readbytes = fread(
-			buf + ONION_LEN,
-			sizeof(buf) - ONION_LEN - NULLTERM_LEN,
+		readbytes += fread(
+			buf + readbytes,  // Possibly we already partially receive desired onion address
 			sizeof(buf[0]),
+			sizeof(buf) - readbytes - NULLTERM_LEN,
 			fkeys);
 		if (readbytes == 0) {
+			fprintf(stderr, "Not found desired hostname \"%s\" in file \"%s\".\n", hostname, filepath);
+			error_number = 2;
 			break;
 		}
 		buf[readbytes] = '\0';
 		char *pfound = strstr(buf, hostname);
-		if (pfound != NULL) {
-			memmove(buf, pfound, ONION_LEN);
+		if (pfound == NULL) {
+			if (readbytes > ONION_LEN) {
+				memmove(buf, buf + readbytes - ONION_LEN, ONION_LEN);
+				readbytes = ONION_LEN;
+			}
+		} else {  // Got it!
+			memmove(buf, pfound, pfound - buf + ONION_LEN);
+			readbytes -= pfound - buf + ONION_LEN;
 			char *pendrecord = NULL;
 			while (1) {
-				size_t readbytes = fread(
-					buf + ONION_LEN,
-					sizeof(buf) - ONION_LEN - NULLTERM_LEN,
+				readbytes += fread(
+					buf + readbytes,
 					sizeof(buf[0]),
+					sizeof(buf) - readbytes - NULLTERM_LEN,
 					fkeys);
 				if (readbytes == 0) {
+					error_number = 3;
 					break;
 				}
-				char *pendrecord = strstr(buf, "\n\n");
+				pendrecord = strstr(buf, "\n\n");
 				if (pendrecord != NULL) {
 					break;
 				}
-				// Need to finish.
 			}
 			if (pendrecord == NULL) {
-				fprintf(stderr, "looks like file with keys \"%s\" is incomplete, found hostname but not keys.\n", filepath);
+				fprintf(stderr, "Looks like file with keys \"%s\" is incomplete, found hostname but not keys.\n", filepath);
+				error_number = 4;
 				break;
 			}
-		} else {
-			memmove(buf, buf + sizeof(buf) - ONION_LEN, ONION_LEN);
+
+			const char *const pfield_sec_begin = strstr(buf, keys_field_secretkey);
+			if (pfield_sec_begin == NULL) {
+				fprintf(stderr, "Cannot find field with secret key within generated section.\n");
+				error_number = 5;
+				break;
+			}
+			const char *const p_sec_begin = pfield_sec_begin + KEYS_FIELD_SECRETKEY_LEN;
+			if (pendrecord - p_sec_begin < BASE64_TO_LEN(FORMATTED_SECRET_LEN)) {
+				fprintf(stderr, "Generated section it too small to keep base64 encoding of secret key.\n");
+				error_number = 6;
+				break;
+			}
+			char secbuf[FORMATTED_SECRET_LEN];
+			if (-1 == base64_from((u8*)secbuf, p_sec_begin, BASE64_TO_LEN(FORMATTED_SECRET_LEN))) {
+				fprintf(stderr, "Invalid base64 encoding of secret key.\n");
+				error_number = 7;
+				break;
+			}
+
+			const char *const pfield_pub_begin = strstr(buf, keys_field_publickey);
+			if (pfield_pub_begin == NULL) {
+				fprintf(stderr, "Cannot find field with public key within generated section.\n");
+				error_number = 8;
+				break;
+			}
+			const char *const p_pub_begin = pfield_pub_begin + KEYS_FIELD_PUBLICKEY_LEN;
+			if (pendrecord - p_pub_begin < BASE64_TO_LEN(KEYS_FIELD_PUBLICKEY_LEN)) {
+				fprintf(stderr, "Generated section it too small to keep base64 encoding of public key.\n");
+				error_number = 9;
+				break;
+			}
+			char pubbuf[FORMATTED_PUBLIC_LEN];
+			if (-1 == base64_from((u8*)pubbuf, p_pub_begin, BASE64_TO_LEN(FORMATTED_PUBLIC_LEN))) {
+				fprintf(stderr, "Invalid base64 encoding of secret key.\n");
+				error_number = 10;
+				break;
+			}
+
+			char pathbuf[1024];
+			const size_t keys_directory_path_len = workdirlen + strlen(hostname);
+			if (keys_directory_path_len >= sizeof(pathbuf)) {
+				fprintf(stderr, "Keys directory path to is too long: %ld, max allowed length is %ld.\n", keys_directory_path_len, sizeof(pathbuf));
+				error_number = 11;
+				break;
+			}
+			strncpy(pathbuf, workdir, workdirlen);
+			strncpy(pathbuf + workdirlen, hostname, strlen(hostname));
+			pathbuf[keys_directory_path_len] = '\0';
+			if (-1 == createdir(pathbuf, use_secret_mode)) {
+				fprintf(stderr, "Cannot create directory \"%s\" for key files.\n", pathbuf);
+				error_number = 12;
+				break;
+			}
+
+			const size_t secretkey_filepath_len = keys_directory_path_len + PATH_SEPARATOR_LEN + strlen(secret_key_filename);
+			if (secretkey_filepath_len >= sizeof(pathbuf)) {
+				fprintf(stderr, "Path to file with secret key is too long %ld, max allowed length is %ld.\n", secretkey_filepath_len, sizeof(pathbuf));
+				error_number = 13;
+				break;
+			}
+			pathbuf[keys_directory_path_len] = '/';
+			strncpy(pathbuf + keys_directory_path_len + PATH_SEPARATOR_LEN, secret_key_filename, strlen(secret_key_filename));
+			pathbuf[secretkey_filepath_len] = '\0';
+			if (-1 == writetofile(pathbuf, (u8*)secbuf, sizeof(secbuf), use_secret_mode)) {
+				fprintf(stderr, "Can't write secret key to file \"%s\".\n", pathbuf);
+				error_number = 14;
+				break;
+			}
+
+			const size_t publickey_filepath_len = keys_directory_path_len + PATH_SEPARATOR_LEN + strlen(public_key_filename);
+			if (publickey_filepath_len >= sizeof(pathbuf)) {
+				fprintf(stderr, "Path to file with public key is too long %ld, max allowed length is %ld.\n", publickey_filepath_len, sizeof(pathbuf));
+				error_number = 15;
+				break;
+			}
+			pathbuf[keys_directory_path_len] = '/';
+			strncpy(pathbuf + keys_directory_path_len + PATH_SEPARATOR_LEN, public_key_filename, strlen(public_key_filename));
+			pathbuf[publickey_filepath_len] = '\0';
+			if (-1 == writetofile(pathbuf, (u8*)pubbuf, sizeof(pubbuf), use_public_mode)) {
+				fprintf(stderr, "Can't write public key to file \"%s\".\n", pathbuf);
+				error_number = 16;
+				break;
+			}
+
+			pathbuf[keys_directory_path_len] = '\0';
+			fprintf(stderr, "Keys successfully exported to directory \"%s\".\n", pathbuf);
+			error_number = 0;
+			break;
 		}
 	}
 
-	if (ferror(fkeys)) {
-		fprintf(stderr, "error while reading file with keys \"%s\".\n", filepath);
-		fclose(fkeys);
-		return 1;
+	if (ferror(fkeys) || error_number) {
+		fprintf(stderr, "Error #%d while parsing generated file \"%s\" or extracting keys.\n", error_number, filepath);
 	}
 	fclose(fkeys);
-	return 0;
+	return error_number;
 }
 
 int main(int argc,char **argv)
@@ -732,8 +798,7 @@ int main(int argc,char **argv)
 					filepath = *argv++;
 					if (argc--) {
 						hostname = *argv++;
-						parseandcreate(filepath, hostname);
-						return 0;
+						return parseandcreate(filepath, hostname);
 					}
 					else
 						e_additional();
