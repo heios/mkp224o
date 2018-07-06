@@ -553,6 +553,11 @@ VEC_STRUCT(threadvec, pthread_t);
 
 int parseandcreate(const char *filepath, const char *hostname)
 {
+	if (strlen(hostname) != ONION_LEN) {
+		fprintf(stderr, "Invalid onion address \"%s\".\n", hostname);
+		return 1;
+	}
+
 	char buf[16*1024];
 	memset(buf, 0, sizeof(buf));
 	FILE *fkeys = fopen(filepath, "r");
@@ -563,16 +568,17 @@ int parseandcreate(const char *filepath, const char *hostname)
 	int error_number = 1;
 	size_t readbytes = 0;
 	while (1) {
-		readbytes += fread(
+		const size_t currentread = fread(
 			buf + readbytes,  // Possibly we already partially receive desired onion address
 			sizeof(buf[0]),
 			sizeof(buf) - readbytes - NULLTERM_LEN,
 			fkeys);
-		if (readbytes == 0) {
+		if (currentread == 0) {
 			fprintf(stderr, "Not found desired hostname \"%s\" in file \"%s\".\n", hostname, filepath);
 			error_number = 2;
 			break;
 		}
+		readbytes += currentread;
 		buf[readbytes] = '\0';
 		char *pfound = strstr(buf, hostname);
 		if (pfound == NULL) {
@@ -585,15 +591,17 @@ int parseandcreate(const char *filepath, const char *hostname)
 			readbytes -= pfound - buf + ONION_LEN;
 			char *pendrecord = NULL;
 			while (1) {
-				readbytes += fread(
+				const size_t currentread = fread(
 					buf + readbytes,
 					sizeof(buf[0]),
 					sizeof(buf) - readbytes - NULLTERM_LEN,
 					fkeys);
-				if (readbytes == 0) {
+				if (currentread == 0) {
 					error_number = 3;
 					break;
 				}
+				readbytes += currentread;
+				buf[readbytes] = '\0';
 				pendrecord = strstr(buf, "\n\n");
 				if (pendrecord != NULL) {
 					break;
