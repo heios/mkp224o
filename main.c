@@ -563,7 +563,7 @@ int parseandcreate(const char *filepath, const char *hostname)
 	FILE *fkeys = fopen(filepath, "r");
 	if (fkeys == NULL) {
 		fprintf(stderr, "Cannot open file with keys \"%s\" for reading.\n", filepath);
-		return 1;
+		return 2;
 	}
 	int error_number = 1;
 	size_t readbytes = 0;
@@ -575,7 +575,7 @@ int parseandcreate(const char *filepath, const char *hostname)
 			fkeys);
 		if (currentread == 0) {
 			fprintf(stderr, "Not found desired hostname \"%s\" in file \"%s\".\n", hostname, filepath);
-			error_number = 2;
+			error_number = 3;
 			break;
 		}
 		readbytes += currentread;
@@ -587,8 +587,9 @@ int parseandcreate(const char *filepath, const char *hostname)
 				readbytes = ONION_LEN;
 			}
 		} else {  // Got it!
-			memmove(buf, pfound, pfound - buf + ONION_LEN);
-			readbytes -= pfound - buf + ONION_LEN;
+			memmove(buf, pfound, readbytes - (pfound - buf));
+			readbytes -= pfound - buf;
+			buf[readbytes] = '\0';
 			char *pendrecord = NULL;
 			while (1) {
 				const size_t currentread = fread(
@@ -596,14 +597,10 @@ int parseandcreate(const char *filepath, const char *hostname)
 					sizeof(buf[0]),
 					sizeof(buf) - readbytes - NULLTERM_LEN,
 					fkeys);
-				if (currentread == 0) {
-					error_number = 3;
-					break;
-				}
 				readbytes += currentread;
 				buf[readbytes] = '\0';
 				pendrecord = strstr(buf, "\n\n");
-				if (pendrecord != NULL) {
+				if (pendrecord != NULL || currentread == 0) {
 					break;
 				}
 			}
